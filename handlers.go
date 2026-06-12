@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ajr-cabbage/chirpy/internal/auth"
 	"github.com/ajr-cabbage/chirpy/internal/database"
 	"github.com/google/uuid"
 )
@@ -87,7 +88,8 @@ func (cfg *apiConfig) resetHandler(w http.ResponseWriter, r *http.Request) {
 
 func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) {
 	type userInfo struct {
-		Email string `json:"email"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
 	}
 
 	type newUserResponse struct {
@@ -101,13 +103,23 @@ func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) 
 	newUserInfo := userInfo{}
 	err := decoder.Decode(&newUserInfo)
 	if err != nil {
-		respondWithError(w, 500, "Error decoding new user JSON")
+		respondWithError(w, 500, err.Error())
 		return
 	}
 
-	newUser, err := cfg.db.CreateUser(r.Context(), newUserInfo.Email)
+	hashedPW, err := auth.HashPassword(newUserInfo.Password)
 	if err != nil {
-		respondWithError(w, 400, "Error adding user to db")
+		respondWithError(w, 500, err.Error())
+	}
+
+	userParams := database.CreateUserParams{
+		Email:          newUserInfo.Email,
+		HashedPassword: hashedPW,
+	}
+
+	newUser, err := cfg.db.CreateUser(r.Context(), userParams)
+	if err != nil {
+		respondWithError(w, 400, err.Error())
 		return
 	}
 
@@ -203,7 +215,6 @@ func (cfg *apiConfig) getChirpsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondWithJSON(w, 200, allChirpsResponse)
-
 }
 
 func (cfg *apiConfig) getChirpByID(w http.ResponseWriter, r *http.Request) {
@@ -218,11 +229,13 @@ func (cfg *apiConfig) getChirpByID(w http.ResponseWriter, r *http.Request) {
 	reqUUID, err := uuid.Parse(r.PathValue("chirpID"))
 	if err != nil {
 		respondWithError(w, 500, err.Error())
+		return
 	}
 
 	chirp, err := cfg.db.GetChirpByID(r.Context(), reqUUID)
 	if err != nil {
 		respondWithError(w, 404, err.Error())
+		return
 	}
 
 	chirpResp := chirpResponse{
@@ -234,5 +247,53 @@ func (cfg *apiConfig) getChirpByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondWithJSON(w, 200, chirpResp)
+}
 
+func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
+	type loginInfo struct {
+		Password string `json:"password"`
+		Email    string `json:"email"`
+	}
+
+	type validUserResponse struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Email     string    `json:"email"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+
+	newLoginInfo := loginInfo{}
+	err := decoder.Decode(&newLoginInfo)
+	if err != nil {
+		respondWithError(w, 500, err.Error())
+		return
+	}
+
+	validUser, err := cfg.db.GetUserByEmail(r.Context(), newLoginInfo.Email)
+	if err != nil {
+		respondWithError(w, 500, err.Error())
+		return
+	}
+
+	authenticated, err := auth.CheckPasswordHash(newLoginInfo.Password, validUser.HashedPassword)
+	if err != nil {
+		respondWithError(w, 500, err.Error())
+		return
+	}
+
+	if !authenticated {
+		respondWithError(w, 401, "Incorrect email or password")
+		return
+	}
+
+	validResp := validUserResponse{
+		ID:        validUser.ID,
+		CreatedAt: validUser.CreatedAt.Time,
+		UpdatedAt: validUser.UpdatedAt.Time,
+		Email:     validUser.Email,
+	}
+
+	respondWithJSON(w, 200, validResp)
 }
