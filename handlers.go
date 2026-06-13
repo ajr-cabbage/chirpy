@@ -381,3 +381,98 @@ func (cfg *apiConfig) revokeHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(204)
 }
+
+func (cfg *apiConfig) udpateUserHandler(w http.ResponseWriter, r *http.Request) {
+	type validResponse struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Email     string    `json:"email"`
+	}
+
+	type updateRequest struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	tokenString, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, err.Error())
+		return
+	}
+
+	userID, err := auth.ValidateJWT(tokenString, cfg.secret)
+	if err != nil {
+		respondWithError(w, 401, err.Error())
+		return
+	}
+
+	updateReq := updateRequest{}
+	decoder := json.NewDecoder(r.Body)
+	err = decoder.Decode(&updateReq)
+	if err != nil {
+		respondWithError(w, 501, err.Error())
+		return
+	}
+
+	hashPW, err := auth.HashPassword(updateReq.Password)
+
+	usrInfoParams := database.UpdateUserInfoParams{
+		ID:             userID,
+		Email:          updateReq.Email,
+		HashedPassword: hashPW,
+	}
+
+	usr, err := cfg.db.UpdateUserInfo(r.Context(), usrInfoParams)
+	if err != nil {
+		respondWithError(w, 501, err.Error())
+	}
+
+	usrResponse := validResponse{
+		ID:        usr.ID,
+		CreatedAt: usr.CreatedAt.Time,
+		UpdatedAt: usr.UpdatedAt.Time,
+		Email:     usr.Email,
+	}
+
+	respondWithJSON(w, 200, usrResponse)
+}
+
+func (cfg *apiConfig) deleteChirpHandler(w http.ResponseWriter, r *http.Request) {
+	tokenString, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, err.Error())
+		return
+	}
+
+	userID, err := auth.ValidateJWT(tokenString, cfg.secret)
+	if err != nil {
+		respondWithError(w, 401, err.Error())
+		return
+	}
+
+	chirpUUID, err := uuid.Parse(r.PathValue("chirpID"))
+	if err != nil {
+		respondWithError(w, 500, err.Error())
+		return
+	}
+
+	chirpData, err := cfg.db.GetChirpByID(r.Context(), chirpUUID)
+	if err != nil {
+		respondWithError(w, 404, err.Error())
+		return
+	}
+
+	if userID != chirpData.UserID {
+		w.WriteHeader(403)
+		return
+	}
+
+	err = cfg.db.DeleteChirp(r.Context(), chirpUUID)
+	if err != nil {
+		respondWithError(w, 500, err.Error())
+		return
+	}
+
+	w.WriteHeader(204)
+}
