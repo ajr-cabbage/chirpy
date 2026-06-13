@@ -159,11 +159,22 @@ func (cfg *apiConfig) createChirpHandler(w http.ResponseWriter, r *http.Request)
 		UserID    uuid.UUID `json:"user_id"`
 	}
 
+	tokenString, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, err.Error())
+		return
+	}
+	userID, err := auth.ValidateJWT(tokenString, cfg.secret)
+	if err != nil {
+		respondWithError(w, 401, err.Error())
+		return
+	}
+
 	decoder := json.NewDecoder(r.Body)
 	newChirpInfo := chirpInfo{}
-	err := decoder.Decode(&newChirpInfo)
+	err = decoder.Decode(&newChirpInfo)
 	if err != nil {
-		respondWithError(w, 500, "Error decoding new chirp JSON")
+		respondWithError(w, 500, err.Error())
 		return
 	}
 
@@ -174,7 +185,7 @@ func (cfg *apiConfig) createChirpHandler(w http.ResponseWriter, r *http.Request)
 
 	newChirpParams := database.CreateChirpParams{
 		Body:   cleanChirpBody(newChirpInfo.Body),
-		UserID: newChirpInfo.UserID,
+		UserID: userID,
 	}
 
 	newChirp, err := cfg.db.CreateChirp(r.Context(), newChirpParams)
@@ -256,10 +267,12 @@ func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type validUserResponse struct {
-		ID        uuid.UUID `json:"id"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
-		Email     string    `json:"email"`
+		ID           uuid.UUID `json:"id"`
+		CreatedAt    time.Time `json:"created_at"`
+		UpdatedAt    time.Time `json:"updated_at"`
+		Email        string    `json:"email"`
+		Token        string    `json:"token"`
+		RefreshToken string    `json:"refresh_token"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -288,12 +301,83 @@ func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	token, err := auth.MakeJWT(validUser.ID, cfg.secret, time.Hour)
+	if err != nil {
+		respondWithError(w, 401, err.Error())
+		return
+	}
+
+	refreshTokParams := database.CreateRefreshTokenParams{
+		Token:     auth.MakeRefreshToken(),
+		UserID:    validUser.ID,
+		ExpiresAt: time.Now().Add(1440 * time.Hour),
+	}
+
+	newRefreshTok, err := cfg.db.CreateRefreshToken(r.Context(), refreshTokParams)
+	if err != nil {
+		respondWithError(w, 500, err.Error())
+		return
+	}
+
 	validResp := validUserResponse{
-		ID:        validUser.ID,
-		CreatedAt: validUser.CreatedAt.Time,
-		UpdatedAt: validUser.UpdatedAt.Time,
-		Email:     validUser.Email,
+		ID:           validUser.ID,
+		CreatedAt:    validUser.CreatedAt.Time,
+		UpdatedAt:    validUser.UpdatedAt.Time,
+		Email:        validUser.Email,
+		Token:        token,
+		RefreshToken: newRefreshTok.Token,
 	}
 
 	respondWithJSON(w, 200, validResp)
+}
+
+func (cfg *apiConfig) refreshHandler(w http.ResponseWriter, r *http.Request) {
+	type validResponse struct {
+		Token string `json:"token"`
+	}
+
+	tokenString, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, err.Error())
+		return
+	}
+
+	refreshToken, err := cfg.db.GetUserFromRefreshToken(r.Context(), tokenString)
+	if err != nil {
+		respondWithError(w, 401, err.Error())
+		return
+	}
+
+	if refreshToken.ExpiresAt.Before(time.Now()) || refreshToken.RevokedAt.Valid == true {
+		w.WriteHeader(401)
+		return
+	}
+
+	respAccessTok, err := auth.MakeJWT(refreshToken.UserID, cfg.secret, time.Hour)
+	if err != nil {
+		respondWithError(w, 401, err.Error())
+		return
+	}
+
+	validResp := validResponse{
+		Token: respAccessTok,
+	}
+
+	respondWithJSON(w, 200, validResp)
+}
+
+func (cfg *apiConfig) revokeHandler(w http.ResponseWriter, r *http.Request) {
+	tokenString, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, err.Error())
+		return
+	}
+
+	err = cfg.db.RevokeRefreshToken(r.Context(), tokenString)
+	if err != nil {
+		respondWithError(w, 401, err.Error())
+		return
+	}
+
+	w.WriteHeader(204)
 }

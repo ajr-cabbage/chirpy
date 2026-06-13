@@ -1,6 +1,11 @@
 package auth
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/alexedwards/argon2id"
@@ -59,4 +64,24 @@ func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
 	}
 
 	return userID, nil
+}
+
+func GetBearerToken(headers http.Header) (string, error) {
+	tokenString := headers.Get("Authorization")
+	if tokenString == "" {
+		return "", errors.New("No auth token provided")
+	}
+	authHeaderParts := strings.SplitN(tokenString, " ", 2)
+	if len(authHeaderParts) < 2 {
+		return "", errors.New("Auth token bad format")
+	}
+
+	return authHeaderParts[1], nil
+}
+
+func MakeRefreshToken() string {
+	tokenBytes := make([]byte, 32)
+	rand.Read(tokenBytes)
+
+	return hex.EncodeToString(tokenBytes)
 }
