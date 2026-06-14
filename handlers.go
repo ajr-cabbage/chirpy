@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -93,10 +94,11 @@ func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) 
 	}
 
 	type newUserResponse struct {
-		ID        uuid.UUID `json:"id"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
-		Email     string    `json:"email"`
+		ID          uuid.UUID `json:"id"`
+		CreatedAt   time.Time `json:"created_at"`
+		UpdatedAt   time.Time `json:"updated_at"`
+		Email       string    `json:"email"`
+		IsChirpyRed bool      `json:"is_chirpy_red"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -124,10 +126,11 @@ func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) 
 	}
 
 	newUserResp := newUserResponse{
-		ID:        newUser.ID,
-		CreatedAt: newUser.CreatedAt.Time,
-		UpdatedAt: newUser.UpdatedAt.Time,
-		Email:     newUser.Email,
+		ID:          newUser.ID,
+		CreatedAt:   newUser.CreatedAt.Time,
+		UpdatedAt:   newUser.UpdatedAt.Time,
+		Email:       newUser.Email,
+		IsChirpyRed: newUser.IsChirpyRed,
 	}
 
 	respondWithJSON(w, 201, newUserResp)
@@ -214,18 +217,42 @@ func (cfg *apiConfig) getChirpsHandler(w http.ResponseWriter, r *http.Request) {
 		UserID    uuid.UUID `json:"user_id"`
 	}
 
-	allChirps, err := cfg.db.GetChirps(r.Context())
-	if err != nil {
-		respondWithError(w, 400, err.Error())
+	idParameter := r.URL.Query().Get("author_id")
+	sortParameter := r.URL.Query().Get("sort")
+
+	if idParameter == "" {
+		chirps, err := cfg.db.GetChirps(r.Context())
+		if err != nil {
+			respondWithError(w, 400, err.Error())
+			return
+		}
+
+		chirpsResponse := []chirpResponse{}
+		for _, chirp := range chirps {
+			chirpsResponse = append(chirpsResponse, chirpResponse{ID: chirp.ID, CreatedAt: chirp.CreatedAt.Time, UpdatedAt: chirp.UpdatedAt.Time, Body: chirp.Body, UserID: chirp.UserID})
+		}
+		if sortParameter == "desc" {
+			sort.Slice(chirpsResponse, func(i, j int) bool { return chirpsResponse[i].CreatedAt.After(chirpsResponse[j].CreatedAt) })
+		}
+		respondWithJSON(w, 200, chirpsResponse)
 		return
-	}
+	} else {
+		userID, err := uuid.Parse(idParameter)
+		if err != nil {
+			respondWithError(w, 400, err.Error())
+		}
 
-	allChirpsResponse := []chirpResponse{}
-	for _, chirp := range allChirps {
-		allChirpsResponse = append(allChirpsResponse, chirpResponse{ID: chirp.ID, CreatedAt: chirp.CreatedAt.Time, UpdatedAt: chirp.UpdatedAt.Time, Body: chirp.Body, UserID: chirp.UserID})
-	}
+		chirps, err := cfg.db.GetChirpByUserID(r.Context(), userID)
 
-	respondWithJSON(w, 200, allChirpsResponse)
+		chirpsResponse := []chirpResponse{}
+		for _, chirp := range chirps {
+			chirpsResponse = append(chirpsResponse, chirpResponse{ID: chirp.ID, CreatedAt: chirp.CreatedAt.Time, UpdatedAt: chirp.UpdatedAt.Time, Body: chirp.Body, UserID: chirp.UserID})
+		}
+		if sortParameter == "desc" {
+			sort.Slice(chirpsResponse, func(i, j int) bool { return chirpsResponse[i].CreatedAt.After(chirpsResponse[j].CreatedAt) })
+		}
+		respondWithJSON(w, 200, chirpsResponse)
+	}
 }
 
 func (cfg *apiConfig) getChirpByID(w http.ResponseWriter, r *http.Request) {
@@ -271,6 +298,7 @@ func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 		CreatedAt    time.Time `json:"created_at"`
 		UpdatedAt    time.Time `json:"updated_at"`
 		Email        string    `json:"email"`
+		IsChirpyRed  bool      `json:"is_chirpy_red"`
 		Token        string    `json:"token"`
 		RefreshToken string    `json:"refresh_token"`
 	}
@@ -324,6 +352,7 @@ func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:    validUser.CreatedAt.Time,
 		UpdatedAt:    validUser.UpdatedAt.Time,
 		Email:        validUser.Email,
+		IsChirpyRed:  validUser.IsChirpyRed,
 		Token:        token,
 		RefreshToken: newRefreshTok.Token,
 	}
@@ -384,10 +413,11 @@ func (cfg *apiConfig) revokeHandler(w http.ResponseWriter, r *http.Request) {
 
 func (cfg *apiConfig) udpateUserHandler(w http.ResponseWriter, r *http.Request) {
 	type validResponse struct {
-		ID        uuid.UUID `json:"id"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
-		Email     string    `json:"email"`
+		ID          uuid.UUID `json:"id"`
+		CreatedAt   time.Time `json:"created_at"`
+		UpdatedAt   time.Time `json:"updated_at"`
+		Email       string    `json:"email"`
+		IsChirpyRed bool      `json:"is_chirpy_red"`
 	}
 
 	type updateRequest struct {
@@ -429,10 +459,11 @@ func (cfg *apiConfig) udpateUserHandler(w http.ResponseWriter, r *http.Request) 
 	}
 
 	usrResponse := validResponse{
-		ID:        usr.ID,
-		CreatedAt: usr.CreatedAt.Time,
-		UpdatedAt: usr.UpdatedAt.Time,
-		Email:     usr.Email,
+		ID:          usr.ID,
+		CreatedAt:   usr.CreatedAt.Time,
+		UpdatedAt:   usr.UpdatedAt.Time,
+		Email:       usr.Email,
+		IsChirpyRed: usr.IsChirpyRed,
 	}
 
 	respondWithJSON(w, 200, usrResponse)
@@ -475,4 +506,45 @@ func (cfg *apiConfig) deleteChirpHandler(w http.ResponseWriter, r *http.Request)
 	}
 
 	w.WriteHeader(204)
+}
+
+func (cfg *apiConfig) upgradeUserHandler(w http.ResponseWriter, r *http.Request) {
+	type upgradeRequest struct {
+		Event string `json:"event"`
+		Data  struct {
+			UserID uuid.UUID `json:"user_id"`
+		} `json:"data"`
+	}
+
+	reqAPIKey, err := auth.GetAPIKey(r.Header)
+	if err != nil {
+		w.WriteHeader(401)
+		return
+	}
+
+	if reqAPIKey != cfg.polkaAPIKey {
+		w.WriteHeader(401)
+		return
+	}
+
+	upgReq := upgradeRequest{}
+	decoder := json.NewDecoder(r.Body)
+	err = decoder.Decode(&upgReq)
+	if err != nil {
+		respondWithError(w, 500, err.Error())
+		return
+	}
+
+	if upgReq.Event == "user.upgraded" {
+		err = cfg.db.UpgradeChirpyRed(r.Context(), upgReq.Data.UserID)
+		if err != nil {
+			w.WriteHeader(404)
+			return
+		}
+		w.WriteHeader(204)
+		return
+	} else {
+		w.WriteHeader(204)
+	}
+
 }
